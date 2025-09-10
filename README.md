@@ -4,8 +4,8 @@ Transform your Crunchyroll browsing experience by displaying anime ratings direc
 
 ## Features
 
-- **Phase 1**: Display ratings directly in anime titles (e.g., "My Wife Has No Emotion (4.6)")
-- **Phase 2** (Coming Soon): Sort anime by highest ratings first
+- **Phase 1** ✅: Display ratings directly in anime titles (e.g., "My Wife Has No Emotion (4.6)")
+- **Phase 2** ✅: Sort anime by highest ratings first with secondary sort by vote count
 
 ## Installation
 
@@ -24,9 +24,11 @@ Transform your Crunchyroll browsing experience by displaying anime ratings direc
 
 The extension:
 1. Detects anime cards on Crunchyroll pages
-2. Extracts rating information from hover components
+2. Extracts rating information from hover components  
 3. Injects ratings directly into anime titles
-4. Uses MutationObserver to handle dynamic content loading
+4. Sorts containers (carousels and browse grids) by highest ratings first
+5. Uses MutationObserver to handle dynamic content loading
+6. Maintains scroll position and DOM functionality
 
 ## Technical Details
 

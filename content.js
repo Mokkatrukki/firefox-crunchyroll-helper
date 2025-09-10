@@ -5,6 +5,7 @@
     'use strict';
 
     const processedCards = new WeakSet();
+    const processedContainers = new WeakSet();
     let debounceTimeout = null;
     let observer = null;
     let retryCount = 0;
@@ -82,6 +83,205 @@
     }
 
     /**
+     * Compare two cards for sorting by rating (highest first), then by votes
+     * @param {Element} cardA - First card to compare
+     * @param {Element} cardB - Second card to compare
+     * @returns {number} - Comparison result for Array.sort()
+     */
+    function compareCards(cardA, cardB) {
+        const dataA = extractRatingData(cardA);
+        const dataB = extractRatingData(cardB);
+        
+        // Primary sort: by rating (highest first)
+        if (dataA.rating !== dataB.rating) {
+            return dataB.rating - dataA.rating;
+        }
+        
+        // Secondary sort: by votes (highest first) 
+        return dataB.votes - dataA.votes;
+    }
+
+    /**
+     * Sort cards within a container by rating
+     * @param {Element} container - The container element holding the cards
+     * @returns {boolean} - Whether sorting was performed
+     */
+    function sortContainer(container) {
+        if (processedContainers.has(container)) {
+            return false; // Already sorted
+        }
+
+        console.log('=== CONTAINER DEBUG INFO ===');
+        console.log('Container element:', container);
+        console.log('Container classes:', container.className);
+        console.log('Container parent:', container.parentElement?.className);
+
+        const cards = Array.from(container.querySelectorAll(SELECTORS.card));
+        console.log('Total cards found:', cards.length);
+        
+        if (cards.length < 2) {
+            console.log('Not enough cards to sort');
+            return false; // Nothing to sort
+        }
+
+        // Log the structure of first few cards
+        cards.slice(0, 3).forEach((card, index) => {
+            const titleElement = card.querySelector(SELECTORS.title);
+            const title = titleElement ? titleElement.textContent.trim() : 'No title';
+            const rating = extractRatingData(card).rating;
+            console.log(`Card ${index}: ${title} (${rating})`);
+            console.log('Card parent:', card.parentElement?.className);
+            console.log('Card wrapper:', card.closest('[data-t="carousel-card-wrapper"]')?.className);
+        });
+
+        // Create array of cards with their ratings for sorting
+        const cardsWithRatings = cards.map(card => {
+            const titleElement = card.querySelector(SELECTORS.title);
+            const title = titleElement ? titleElement.textContent.trim() : 'No title';
+            const ratingData = extractRatingData(card);
+            return {
+                element: card,
+                title: title,
+                ...ratingData
+            };
+        }).filter(item => item.rating > 0); // Only sort cards that have ratings
+
+        console.log('Cards with ratings before sort:', cardsWithRatings.map(c => `${c.title}: ${c.rating}`));
+
+        if (cardsWithRatings.length < 2) {
+            console.log('Not enough rated cards to sort');
+            return false; // Not enough rated cards to sort
+        }
+
+        // Sort by rating (highest first), then by votes
+        cardsWithRatings.sort((a, b) => {
+            if (a.rating !== b.rating) {
+                return b.rating - a.rating;
+            }
+            return b.votes - a.votes;
+        });
+
+        console.log('Cards with ratings after sort:', cardsWithRatings.map(c => `${c.title}: ${c.rating}`));
+
+        // Check if we need to move wrapper elements instead of just cards
+        const firstCardWrapper = cards[0].parentElement;
+        const isWrapped = firstCardWrapper && firstCardWrapper.hasAttribute('data-t') && 
+                         firstCardWrapper.getAttribute('data-t').includes('carousel-card-wrapper');
+        
+        console.log('Cards are wrapped:', isWrapped);
+        console.log('Wrapper element:', firstCardWrapper?.className);
+
+        if (isWrapped) {
+            // We need to sort the wrapper elements, not the cards directly
+            const wrappers = cardsWithRatings.map(item => item.element.parentElement);
+            console.log('Moving wrappers instead of cards');
+            
+            const fragment = document.createDocumentFragment();
+            wrappers.forEach(wrapper => {
+                if (wrapper && wrapper.parentNode === container) {
+                    fragment.appendChild(wrapper);
+                }
+            });
+            
+            // Add non-rated card wrappers at the end
+            cards.forEach(card => {
+                const wrapper = card.parentElement;
+                const hasRating = cardsWithRatings.some(item => item.element === card);
+                if (!hasRating && wrapper && wrapper.parentNode === container) {
+                    fragment.appendChild(wrapper);
+                }
+            });
+            
+            container.appendChild(fragment);
+        } else {
+            // Original logic for unwrapped cards
+            console.log('Moving cards directly');
+            const fragment = document.createDocumentFragment();
+            
+            cardsWithRatings.forEach(item => {
+                if (item.element.parentNode === container) {
+                    fragment.appendChild(item.element);
+                }
+            });
+            
+            // Add any non-rated cards at the end
+            cards.forEach(card => {
+                const hasRating = cardsWithRatings.some(item => item.element === card);
+                if (!hasRating && card.parentNode === container) {
+                    fragment.appendChild(card);
+                }
+            });
+            
+            container.appendChild(fragment);
+        }
+        
+        // Reset scroll position for carousels - more aggressive approach
+        // Use setTimeout to ensure DOM manipulation is complete before scrolling
+        setTimeout(() => {
+            console.log(`Checking scroll positions for container...`);
+            
+            // Force scroll the main container to 0 regardless of current position
+            const originalScroll = container.scrollLeft;
+            container.scrollLeft = 0;
+            console.log(`Force scrolled container from ${originalScroll} to 0`);
+            
+            // Check all parent containers up the tree
+            let scrollParent = container.parentElement;
+            let level = 0;
+            while (scrollParent && scrollParent !== document.body && level < 5) {
+                const parentScroll = scrollParent.scrollLeft;
+                if (parentScroll !== 0) {
+                    console.log(`Scrolling parent level ${level} (${scrollParent.className}) from ${parentScroll} to 0`);
+                }
+                scrollParent.scrollLeft = 0;
+                scrollParent = scrollParent.parentElement;
+                level++;
+            }
+            
+            // Double-check with a second pass
+            setTimeout(() => {
+                if (container.scrollLeft !== 0) {
+                    console.log(`Second pass: container still scrolled to ${container.scrollLeft}, forcing to 0`);
+                    container.scrollLeft = 0;
+                }
+            }, 100);
+        }, 50);
+        
+        processedContainers.add(container);
+        console.log(`Crunchyroll Helper: Sorted ${cardsWithRatings.length} cards in container`);
+        console.log('=== END CONTAINER DEBUG ===');
+        return true;
+    }
+
+    /**
+     * Find and sort all containers on the page
+     */
+    function sortAllContainers() {
+        const carouselContainers = document.querySelectorAll(SELECTORS.carouselContainer);
+        const browseContainers = document.querySelectorAll(SELECTORS.browseContainer);
+        
+        let sortedCount = 0;
+        
+        // Sort carousel containers
+        carouselContainers.forEach(container => {
+            if (sortContainer(container)) {
+                sortedCount++;
+            }
+        });
+        
+        // Sort browse containers
+        browseContainers.forEach(container => {
+            if (sortContainer(container)) {
+                sortedCount++;
+            }
+        });
+        
+        if (sortedCount > 0) {
+            console.log(`Crunchyroll Helper: Sorted ${sortedCount} containers by rating`);
+        }
+    }
+
+    /**
      * Process all anime cards on the page
      */
     function processAllCards() {
@@ -119,6 +319,11 @@
         
         if (processedCount > 0) {
             console.log(`Crunchyroll Helper: Processed ${processedCount} new cards`);
+            
+            // After processing ratings, sort containers by rating
+            setTimeout(() => {
+                sortAllContainers();
+            }, 100); // Small delay to ensure DOM is stable
         }
         
         retryCount = 0; // Reset retry count on successful processing
@@ -156,7 +361,9 @@
                         if (node.nodeType === Node.ELEMENT_NODE) {
                             return node.matches && (
                                 node.matches(SELECTORS.card) ||
-                                (node.querySelector && node.querySelector(SELECTORS.card))
+                                (node.querySelector && node.querySelector(SELECTORS.card)) ||
+                                node.matches(SELECTORS.carouselContainer) ||
+                                node.matches(SELECTORS.browseContainer)
                             );
                         }
                         return false;
