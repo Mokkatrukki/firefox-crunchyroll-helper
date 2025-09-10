@@ -1,0 +1,34 @@
+# Development files
+.claude/
+*.log
+*.tmp
+
+# Firefox extension packaging
+*.xpi
+*.zip
+web-ext-artifacts/
+
+# Browser testing files
+Crunchyroll_*.html
+Crunchyroll_*_files/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node.js (if using web-ext)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Temporary research files
+research.md
+plan.md
+crunchyroll.svg

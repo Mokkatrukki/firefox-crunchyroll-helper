@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "name": "Firefox Crunchyroll Rating Helper",
+  "version": "1.0.0",
+  "description": "Display anime ratings directly in titles and sort by highest ratings first on Crunchyroll",
+  
+  "permissions": [
+    "*://*.crunchyroll.com/*"
+  ],
+  
+  "content_scripts": [
+    {
+      "matches": ["*://*.crunchyroll.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  
+  "icons": {
+    "48": "icon.png"
+  }
+}
