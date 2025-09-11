@@ -46,6 +46,7 @@
     // State management
     const processedCards = new WeakSet();
     const processedContainers = new WeakSet();
+    const containersNeedingSort = new WeakSet(); // Track containers that need re-sorting
     let debounceTimeout = null;
     let observer = null;
     let retryCount = 0;
@@ -103,10 +104,14 @@
         detected.carousels = Array.from(carousels);
         detected.browse = Array.from(browse);
         
-        // If no containers found, try fallback detection
-        if (detected.carousels.length === 0 && detected.browse.length === 0) {
-            console.log('No containers found with primary selectors, trying fallbacks...');
+        Logger.debug(`Primary detection: ${carousels.length} carousel containers, ${browse.length} browse containers`);
+        
+        // Enhanced fallback detection - always try to find containers with cards
+        const totalFound = detected.carousels.length + detected.browse.length;
+        if (totalFound === 0) {
+            Logger.debug('No containers found with primary selectors, trying fallbacks...');
             
+            // Try existing fallback selectors first
             SELECTORS.containerFallbacks.forEach(selector => {
                 try {
                     const containers = document.querySelectorAll(selector);
@@ -117,18 +122,50 @@
                         
                         if (carouselCards > 0) {
                             detected.carousels.push(container);
-                            console.log(`Fallback: Found carousel container "${container.className}" with ${carouselCards} cards`);
+                            Logger.debug(`Fallback: Found carousel container "${container.className}" with ${carouselCards} cards`);
                         } else if (browseCards > 0) {
                             detected.browse.push(container);
-                            console.log(`Fallback: Found browse container "${container.className}" with ${browseCards} cards`);
+                            Logger.debug(`Fallback: Found browse container "${container.className}" with ${browseCards} cards`);
                         } else if (innerCards > 0) {
                             detected.unknown.push({ container, cards: innerCards });
-                            console.log(`Fallback: Found unknown container "${container.className}" with ${innerCards} inner cards`);
+                            Logger.debug(`Fallback: Found unknown container "${container.className}" with ${innerCards} inner cards`);
                         }
                     });
                 } catch (error) {
-                    console.log(`Fallback selector "${selector}" failed:`, error.message);
+                    Logger.debug(`Fallback selector "${selector}" failed:`, error.message);
                 }
+            });
+        }
+        
+        // Ultra-fallback: If still no containers found, look for any element that contains inner cards
+        const totalFoundAfterFallback = detected.carousels.length + detected.browse.length + detected.unknown.length;
+        if (totalFoundAfterFallback === 0) {
+            Logger.debug('Still no containers found, trying ultra-fallback: looking for any parent of inner cards...');
+            
+            const allInnerCards = document.querySelectorAll(SELECTORS.innerCard);
+            Logger.debug(`Found ${allInnerCards.length} inner cards total, looking for their containers...`);
+            
+            const potentialContainers = new Set();
+            allInnerCards.forEach(card => {
+                // Look for container by traversing up the DOM
+                let parent = card.parentElement;
+                let depth = 0;
+                while (parent && depth < 5) { // Don't go too far up
+                    const cardsInParent = parent.querySelectorAll(SELECTORS.innerCard).length;
+                    if (cardsInParent >= 2 && !potentialContainers.has(parent)) {
+                        potentialContainers.add(parent);
+                        Logger.debug(`Ultra-fallback: Found potential container "${parent.className}" with ${cardsInParent} cards (depth: ${depth})`);
+                        break;
+                    }
+                    parent = parent.parentElement;
+                    depth++;
+                }
+            });
+            
+            // Add potential containers to unknown category
+            potentialContainers.forEach(container => {
+                const cardsInContainer = container.querySelectorAll(SELECTORS.innerCard).length;
+                detected.unknown.push({ container, cards: cardsInContainer });
             });
         }
         
@@ -188,11 +225,40 @@
             const originalTitle = titleElement.textContent.trim();
             titleElement.textContent = `${originalTitle} (${rating})`;
             processedCards.add(card);
+            
+            // Mark any containers containing this card as needing sort
+            markContainerForSorting(card);
+            
             Logger.log(`Added rating ${rating} to "${originalTitle}"`);
             return true;
         }
         
         return false;
+    }
+
+    /**
+     * Mark containers containing the given card as needing re-sort
+     * @param {Element} card - The card element that was just processed
+     */
+    function markContainerForSorting(card) {
+        let parent = card.parentElement;
+        let depth = 0;
+        
+        while (parent && depth < 10) { // Look up the DOM tree
+            // Check if this parent looks like a container
+            const hasCarouselCards = parent.querySelectorAll(SELECTORS.carouselCard).length > 0;
+            const hasBrowseCards = parent.querySelectorAll(SELECTORS.browseCard).length > 0;
+            const hasInnerCards = parent.querySelectorAll(SELECTORS.innerCard).length > 1;
+            
+            if (hasCarouselCards || hasBrowseCards || hasInnerCards) {
+                containersNeedingSort.add(parent);
+                Logger.debug(`Marked container "${parent.className}" for re-sorting (contains new card)`);
+                break; // Found the container, no need to go further up
+            }
+            
+            parent = parent.parentElement;
+            depth++;
+        }
     }
 
     /**
@@ -218,10 +284,11 @@
      * Unified container sorting function - handles all container types
      * @param {Element} container - The container element
      * @param {string} containerType - 'carousel', 'browse', or 'generic'
+     * @param {boolean} forceSort - Force sorting even if container was previously processed
      * @returns {boolean} - Whether sorting was performed
      */
-    function sortContainer(container, containerType = 'generic') {
-        if (processedContainers.has(container)) {
+    function sortContainer(container, containerType = 'generic', forceSort = false) {
+        if (!forceSort && processedContainers.has(container)) {
             return false; // Already sorted
         }
 
@@ -348,25 +415,50 @@
 
     /**
      * Enhanced container sorting with smart detection and fallbacks
+     * @param {boolean} forceResort - Force re-sorting of all containers, even previously processed ones
      */
-    function sortAllContainers() {
+    function sortAllContainers(forceResort = false) {
         Performance.start('sortAllContainers');
-        Logger.log('Starting container detection and sorting');
+        Logger.log(`Starting container detection and sorting${forceResort ? ' (forced re-sort)' : ''}`);
         
         try {
             const detected = detectAllContainers();
             Logger.debug(`Container detection: ${detected.carousels.length} carousels, ${detected.browse.length} browse, ${detected.unknown.length} unknown`);
             
             let sortedCount = 0;
+            let newContent = false;
             const errors = [];
+            
+            /**
+             * Check if container needs sorting
+             * @param {Element} container - The container to check
+             * @returns {boolean} - Whether container needs sorting
+             */
+            function needsSorting(container) {
+                const wasMarked = containersNeedingSort.has(container);
+                const innerCards = container.querySelectorAll(SELECTORS.innerCard);
+                const newCards = Array.from(innerCards).filter(card => !processedCards.has(card));
+                
+                Logger.debug(`Container "${container.className}": ${innerCards.length} total cards, ${newCards.length} unprocessed cards, marked for sorting: ${wasMarked}`);
+                
+                return wasMarked || newCards.length > 0;
+            }
             
             // Sort carousel containers
             detected.carousels.forEach((container, index) => {
                 try {
-                    if (!processedContainers.has(container)) {
-                        Logger.debug(`Processing carousel ${index + 1}/${detected.carousels.length}`);
-                        if (sortContainer(container, 'carousel')) {
+                    const isProcessed = processedContainers.has(container);
+                    const needs = needsSorting(container);
+                    const shouldSort = !isProcessed || forceResort || needs;
+                    
+                    if (shouldSort) {
+                        Logger.debug(`Processing carousel ${index + 1}/${detected.carousels.length}${needs ? ' (needs sorting)' : ''}`);
+                        if (sortContainer(container, 'carousel', forceResort || needs)) {
                             sortedCount++;
+                            if (needs) {
+                                newContent = true;
+                                containersNeedingSort.delete(container); // Clear the flag
+                            }
                         }
                     }
                 } catch (error) {
@@ -378,10 +470,18 @@
             // Sort browse containers
             detected.browse.forEach((container, index) => {
                 try {
-                    if (!processedContainers.has(container)) {
-                        Logger.debug(`Processing browse ${index + 1}/${detected.browse.length}`);
-                        if (sortContainer(container, 'browse')) {
+                    const isProcessed = processedContainers.has(container);
+                    const needs = needsSorting(container);
+                    const shouldSort = !isProcessed || forceResort || needs;
+                    
+                    if (shouldSort) {
+                        Logger.debug(`Processing browse ${index + 1}/${detected.browse.length}${needs ? ' (needs sorting)' : ''}`);
+                        if (sortContainer(container, 'browse', forceResort || needs)) {
                             sortedCount++;
+                            if (needs) {
+                                newContent = true;
+                                containersNeedingSort.delete(container); // Clear the flag
+                            }
                         }
                     }
                 } catch (error) {
@@ -393,8 +493,12 @@
             // Handle unknown containers with smart type detection
             detected.unknown.forEach(({ container, cards }, index) => {
                 try {
-                    if (!processedContainers.has(container)) {
-                        Logger.debug(`Processing unknown container ${index + 1}/${detected.unknown.length} (${cards} cards)`);
+                    const isProcessed = processedContainers.has(container);
+                    const needs = needsSorting(container);
+                    const shouldSort = !isProcessed || forceResort || needs;
+                    
+                    if (shouldSort) {
+                        Logger.debug(`Processing unknown container ${index + 1}/${detected.unknown.length} (${cards} cards)${needs ? ' (needs sorting)' : ''}`);
                         
                         // Determine container type based on structure
                         let containerType = 'generic';
@@ -406,8 +510,12 @@
                         
                         Logger.debug(`Unknown container ${index} detected as: ${containerType}`);
                         
-                        if (sortContainer(container, containerType)) {
+                        if (sortContainer(container, containerType, forceResort || needs)) {
                             sortedCount++;
+                            if (needs) {
+                                newContent = true;
+                                containersNeedingSort.delete(container); // Clear the flag
+                            }
                         }
                     }
                 } catch (error) {
@@ -419,7 +527,8 @@
             const duration = Performance.end('sortAllContainers');
             
             if (sortedCount > 0) {
-                Logger.success(`Sorted ${sortedCount} containers by rating ${duration ? `in ${duration.toFixed(1)}ms` : ''}`);
+                const reason = newContent ? ' (new content detected)' : forceResort ? ' (forced re-sort)' : '';
+                Logger.success(`Sorted ${sortedCount} containers by rating${reason} ${duration ? `in ${duration.toFixed(1)}ms` : ''}`);
             } else {
                 Logger.warn('No containers were sorted - may need selector updates');
             }
